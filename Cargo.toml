@@ -1,0 +1,3 @@
+[workspace]
+members = ["udp_server", "game"]
+resolver = "2"
