@@ -8,14 +8,16 @@ pub struct Point {
 }
 
 #[enum_dispatch]
-pub trait GameStateMessage {
-    fn open(&self) -> (f32, f32);
+pub trait GameStateMessage<T> {
+    fn open(&self) -> T;
 }
 
 #[enum_dispatch(GameStateMessage)]
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum BellMessage {
     PositionChangeMessage,
+    DeferMessage,
+    PlayerInsertionMessage,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -23,9 +25,25 @@ pub struct PositionChangeMessage {
     pub x: f32,
     pub y: f32,
 }
-impl GameStateMessage for PositionChangeMessage {
+impl GameStateMessage<(f32, f32)> for PositionChangeMessage {
     fn open(&self) -> (f32, f32) {
         (self.x, self.y)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeferMessage {}
+impl GameStateMessage<(f32, f32)> for DeferMessage {
+    fn open(&self) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlayerInsertionMessage {}
+impl GameStateMessage<(f32, f32)> for PlayerInsertionMessage {
+    fn open(&self) -> (f32, f32) {
+        (0.0, 0.0)
     }
 }
 
