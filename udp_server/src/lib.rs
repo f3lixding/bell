@@ -1,57 +1,23 @@
-use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Default, Debug, Clone)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
+    pub id: i32,
 }
 
-#[enum_dispatch]
-pub trait GameStateMessage<T> {
-    fn open(&self) -> T;
-}
-
-#[enum_dispatch(GameStateMessage)]
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum BellMessage {
-    PositionChangeMessage,
+    PositionChangeMessage(Point),
     DeferMessage,
-    PlayerInsertionMessage,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PositionChangeMessage {
-    pub x: f32,
-    pub y: f32,
-}
-impl GameStateMessage<(f32, f32)> for PositionChangeMessage {
-    fn open(&self) -> (f32, f32) {
-        (self.x, self.y)
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DeferMessage {}
-impl GameStateMessage<(f32, f32)> for DeferMessage {
-    fn open(&self) -> (f32, f32) {
-        (0.0, 0.0)
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PlayerInsertionMessage {}
-impl GameStateMessage<(f32, f32)> for PlayerInsertionMessage {
-    fn open(&self) -> (f32, f32) {
-        (0.0, 0.0)
-    }
+    PlayerInsertionMessage(Point),
 }
 
 pub struct GameState {
     capacity: usize,
     process_queue: Vec<Option<BellMessage>>,
 }
-
 impl GameState {
     pub fn new_with_capacity(capacity: usize) -> Self {
         Self {

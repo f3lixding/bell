@@ -1,4 +1,4 @@
-use lib_udp_server::{BellMessage, GameState, Point, PositionChangeMessage};
+use lib_udp_server::{BellMessage, GameState, Point};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
@@ -25,7 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut game_state = game_state_clone.write().await;
                 let messages = game_state.retrieve_messages();
                 tokio::spawn(async move {
-                    println!("{} valid message received and should be processed here", messages.len());
+                    println!(
+                        "{} valid message received and should be processed here",
+                        messages.len()
+                    );
                 });
             }
         }
@@ -38,7 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // using RwLock for now
     while let Ok((size, src)) = socket.recv_from(&mut buf).await {
         {
-            let sample_data = BellMessage::from(PositionChangeMessage { x: 0.0, y: 0.0 });
+            let sample_data = BellMessage::PositionChangeMessage(Point {
+                x: 0.,
+                y: 0.,
+                id: 0,
+            });
             let mut data = serde_json::to_vec(&sample_data).unwrap();
             data.push(b'\n');
             socket.send_to(&data, src).await?;
