@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use lib_udp_server::{BellMessage, Point};
 use std::net::UdpSocket;
 use std::sync::mpsc::channel;
 use std::sync::Arc;
@@ -60,7 +61,8 @@ fn main() {
                         let y = y.read().unwrap();
                         (*x, *y)
                     };
-                    let message = serde_json::to_vec(&lib_udp_server::Point { x, y }).unwrap();
+                    let message = BellMessage::PositionChangeMessage(Point { x, y, id: 0 });
+                    let message = serde_json::to_vec(&message).unwrap();
                     socket_clone.send_to(&message, "127.0.0.1:8080").unwrap();
                 }
                 UpdateMessage::PositionChangeExtern(point) => {
@@ -91,10 +93,22 @@ fn main() {
         while let Ok((size, _src)) = socket.recv_from(&mut buf) {
             println!("message received");
             let data = &buf[..size];
-            let point = serde_json::from_slice::<lib_udp_server::Point>(&data).unwrap();
-            tx_clone
-                .send(UpdateMessage::PositionChangeExtern(point))
-                .unwrap();
+            let message = serde_json::from_slice::<BellMessage>(&data);
+            if let Ok(message) = message {
+                match message {
+                    BellMessage::PositionChangeMessage(point) => {
+                        tx_clone
+                            .send(UpdateMessage::PositionChangeExtern(point))
+                            .unwrap();
+                    }
+                    BellMessage::PlayerInsertionMessage(point) => {
+                        tx_clone
+                            .send(UpdateMessage::PositionChangeExtern(point))
+                            .unwrap();
+                    }
+                    _ => {}
+                }
+            }
         }
     });
 
