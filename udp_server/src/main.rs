@@ -12,6 +12,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let rest_period_in_secs = 3;
 
+    let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    let socket = Arc::new(socket);
+
+    let socket_clone = socket.clone();
     let game_state_clone = game_state.clone();
     tokio::spawn(async move {
         loop {
@@ -21,21 +25,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 game_state.is_empty()
             };
 
+            let game_state = game_state_clone.clone();
+            let socket = socket_clone.clone();
             if !is_empty {
-                let mut game_state = game_state_clone.write().await;
-                let messages = game_state.retrieve_messages();
                 tokio::spawn(async move {
-                    println!(
-                        "{} valid message received and should be processed here",
-                        messages.len()
-                    );
+                    // we probably don't need to store the positions at all times
+                    // TODO: make a messaging system to update the positions
+                    // instead of using a lock system
+                    let mut game_state = game_state.write().await;
+                    let messages = game_state.retrieve_messages();
+                    // TODO: abstract this into its own function to allow for server side
+                    // modifications (e.g. collision)
+                    let out_going_messages = messages
+                        .iter()
+                        .map(|message| match message {
+                            BellMessage::PositionChangeMessage(point) => {
+                                let audiences = game_state.get_addrs_for_id(point.id);
+                                audiences
+                                    .iter()
+                                    .map(|addr| {
+                                        (*addr, BellMessage::PositionChangeMessage(point.clone()))
+                                    })
+                                    .collect::<Vec<(&std::net::SocketAddr, BellMessage)>>()
+                            }
+                            BellMessage::PlayerInsertionMessage(point) => {
+                                let audiences = game_state.get_addrs_for_id(point.id);
+                                audiences
+                                    .iter()
+                                    .map(|addr| {
+                                        (*addr, BellMessage::PlayerInsertionMessage(point.clone()))
+                                    })
+                                    .collect::<Vec<(&std::net::SocketAddr, BellMessage)>>()
+                            }
+                            _ => vec![],
+                        })
+                        .flatten()
+                        .collect::<Vec<(&std::net::SocketAddr, BellMessage)>>();
+
+                    for (addr, message) in out_going_messages {
+                        let data = serde_json::to_vec(&message).unwrap();
+                        _ = socket.send_to(&data, *addr).await;
+                    }
                 });
             }
         }
     });
 
     let game_state_clone = game_state.clone();
-    let socket = UdpSocket::bind("127.0.0.1:8080").await?;
     let mut buf = vec![0; 1024];
 
     // using RwLock for now
@@ -62,6 +98,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if !is_full {
                 let mut game_state = game_state_clone.write().await;
+                if let BellMessage::PlayerInsertionMessage(ref point) = data {
+                    game_state.insert_player(point.id, point.x, point.y, src);
+                }
                 game_state.queue_message(data);
             } else {
                 println!("Game is full"); // TODO: need to send a message to the client that the game is full

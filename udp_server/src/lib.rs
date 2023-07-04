@@ -17,15 +17,23 @@ pub enum BellMessage {
 pub struct GameState {
     capacity: usize,
     process_queue: Vec<Option<BellMessage>>,
+    _positions: std::collections::HashMap<i32, (f32, f32)>,
+    addrs: std::collections::HashMap<i32, std::net::SocketAddr>,
 }
 impl GameState {
     pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             capacity,
             process_queue: Vec::<Option<BellMessage>>::with_capacity(capacity),
+            _positions: std::collections::HashMap::<i32, (f32, f32)>::with_capacity(2),
+            addrs: std::collections::HashMap::<i32, std::net::SocketAddr>::with_capacity(2),
         }
     }
 
+    pub fn insert_player(&mut self, id: i32, x: f32, y: f32, addr: std::net::SocketAddr) {
+        self.addrs.insert(id, addr);
+        self._positions.insert(id, (x, y));
+    }
     pub fn is_full(&self) -> bool {
         self.process_queue.len() >= self.capacity
     }
@@ -45,5 +53,24 @@ impl GameState {
         }
 
         messages
+    }
+
+    pub fn get_collided_pairs(&self) -> Vec<(i32, i32)> {
+        vec![]
+    }
+
+    pub fn get_addr_from_id(&self, id: i32) -> Option<&std::net::SocketAddr> {
+        self.addrs.get(&id)
+    }
+
+    pub fn get_addrs_for_id(&self, id: i32) -> Vec<&std::net::SocketAddr> {
+        let mut res_addrs = Vec::with_capacity(3);
+        for (k, v) in self.addrs.iter() {
+            if k != &id {
+                res_addrs.push(v);
+            }
+        }
+
+        res_addrs
     }
 }
