@@ -2,7 +2,6 @@ use bevy::prelude::*;
 use lib_udp_server::{BellMessage, Point};
 use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -37,6 +36,7 @@ struct SpritePosition {
 struct SpritePositions(
     Arc<RwLock<HashMap<u32, SpritePosition>>>,
     Arc<RwLock<Option<u32>>>,
+    Arc<RwLock<u32>>,
 );
 
 #[derive(Resource)]
@@ -53,15 +53,17 @@ enum UpdateMessage {
 
 fn main() {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let sprite_position = SpritePosition::default();
     let sprite_collections = {
-        let mut map = HashMap::new();
+        let map = HashMap::new();
         // TODO: replace this with a proper initialization routine
-        map.insert(0, sprite_position);
 
         let position_collections = Arc::new(RwLock::new(map));
         let injection_order = Arc::new(RwLock::new(None));
-        SpritePositions(position_collections, injection_order)
+        SpritePositions(
+            position_collections,
+            injection_order,
+            Arc::new(RwLock::new(0)),
+        )
     };
 
     let (tx, rx) = channel::<UpdateMessage>();
@@ -71,10 +73,11 @@ fn main() {
     // Internal listening thread
     thread::spawn(move || {
         while let Ok(message) = rx.recv() {
+            let self_id = sprite_collections_clone.2.read().unwrap();
             match message {
                 UpdateMessage::PositionChange => {
                     let target_sprite = sprite_collections_clone.0.read().unwrap();
-                    let target_sprite = target_sprite.get(&0).unwrap();
+                    let target_sprite = target_sprite.get(&self_id).unwrap();
                     let SpritePosition { ref x, ref y, .. } = target_sprite;
                     let (x, y) = {
                         let x = x.read().unwrap();
@@ -87,7 +90,7 @@ fn main() {
                 }
                 UpdateMessage::PositionChangeExtern(point) => {
                     let target_sprite = sprite_collections_clone.0.read().unwrap();
-                    let target_sprite = target_sprite.get(&0).unwrap();
+                    let target_sprite = target_sprite.get(&(point.id as u32)).unwrap();
                     let SpritePosition {
                         ref x,
                         ref y,
@@ -140,7 +143,7 @@ fn main() {
                     }
                     BellMessage::PlayerInsertionMessage(point) => {
                         tx_clone
-                            .send(UpdateMessage::PositionChangeExtern(point))
+                            .send(UpdateMessage::PlayerInsertion(point))
                             .unwrap();
                     }
                     _ => {}
@@ -158,14 +161,43 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugin(LogDiagnosticsPlugin::default())
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
-        .add_startup_system(setup)
         .insert_resource(sprite_collections)
         .insert_resource(message_sender)
         .add_system(sprite_movement)
+        .add_system(maybe_insert_player)
+        .add_startup_system(setup)
         .run();
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut sprite_collections: ResMut<SpritePositions>,
+) {
+    // fetch id as assigned by the server
+    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let registration_message = BellMessage::PlayerInsertionMessage(Point {
+        x: 0.,
+        y: 0.,
+        id: 0,
+    });
+    let registration_message = serde_json::to_vec(&registration_message).unwrap();
+    socket
+        .send_to(&registration_message, "127.0.0.1:8080")
+        .unwrap();
+
+    let mut buf = vec![0; 1024];
+    let id: u32;
+    if let Ok((size, _src)) = socket.recv_from(&mut buf) {
+        if size > 4 {
+            panic!("Received registration data but failed to parse it");
+        }
+        id = u32::from_be_bytes(buf[0..4].try_into().unwrap());
+        println!("Id received: {}", id);
+    } else {
+        panic!("Received registration data but failed to parse it");
+    }
+
     commands.spawn(Camera2dBundle::default());
     commands.spawn((
         SpriteBundle {
@@ -174,8 +206,19 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             ..default()
         },
         Direction::Still,
-        PlayerId(0),
+        PlayerId(id),
     ));
+
+    *sprite_collections.2.write().unwrap() = id;
+    let mut sprite_registry = sprite_collections.0.write().unwrap();
+    sprite_registry.insert(
+        id,
+        SpritePosition {
+            x: Arc::new(RwLock::new(0.)),
+            y: Arc::new(RwLock::new(0.)),
+            has_extern_changes: Arc::new(RwLock::new(false)),
+        },
+    );
 }
 
 fn maybe_insert_player(
@@ -183,7 +226,37 @@ fn maybe_insert_player(
     asset_server: Res<AssetServer>,
     sprite_positions: ResMut<SpritePositions>,
 ) {
+    let insertion_order = sprite_positions.1.read().unwrap();
+    if insertion_order.is_some() {
+        let mut insertion_order = sprite_positions.1.write().unwrap();
+        let insert_id = insertion_order.take();
+        if let Some(insert_id) = insert_id {
+            let target_position = sprite_positions.0.read().unwrap();
+            let target_position = target_position.get(&insert_id);
+            if target_position.is_none() {
+                return;
+            }
+            let target_position = target_position.unwrap();
+            commands.spawn((
+                SpriteBundle {
+                    texture: asset_server.load("icon.png"),
+                    transform: Transform::from_xyz(
+                        *target_position.x.read().unwrap(),
+                        *target_position.y.read().unwrap(),
+                        0.,
+                    ),
+                    ..default()
+                },
+                Direction::Still,
+                PlayerId(insert_id),
+            ));
+        }
+    }
+    // if let Some(target_id) = sprite_positions.1.read().unwrap() {
+
+    // }
 }
+
 /// The sprite is animated by changing its translation depending on the time that has passed since
 /// the last frame.
 fn sprite_movement(
