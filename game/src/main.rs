@@ -33,15 +33,25 @@ struct SpritePosition {
 
 // TODO: Use this instead of a single SpritePosition
 #[derive(Resource, Clone, Default)]
-struct SpritePositions(
-    Arc<RwLock<HashMap<u32, SpritePosition>>>,
-    Arc<RwLock<Option<u32>>>,
-    Arc<RwLock<u32>>,
-);
+struct SpritePositions {
+    pub position_collections: Arc<RwLock<HashMap<u32, SpritePosition>>>,
+    pub injection_order: Arc<RwLock<Option<u32>>>,
+    pub self_id: Arc<RwLock<u32>>,
+}
 
 #[derive(Resource)]
 struct MessageSender {
     tx: Mutex<std::sync::mpsc::Sender<UpdateMessage>>,
+}
+
+#[derive(Resource)]
+struct WrappedSocket {
+    socket: UdpSocket,
+}
+impl WrappedSocket {
+    pub fn send_to(&self, message: &[u8], address: &str) -> std::io::Result<usize> {
+        self.socket.send_to(message, address)
+    }
 }
 
 #[derive(Clone)]
@@ -59,11 +69,11 @@ fn main() {
 
         let position_collections = Arc::new(RwLock::new(map));
         let injection_order = Arc::new(RwLock::new(None));
-        SpritePositions(
+        SpritePositions {
             position_collections,
             injection_order,
-            Arc::new(RwLock::new(0)),
-        )
+            self_id: Arc::new(RwLock::new(0)),
+        }
     };
 
     let (tx, rx) = channel::<UpdateMessage>();
@@ -73,10 +83,13 @@ fn main() {
     // Internal listening thread
     thread::spawn(move || {
         while let Ok(message) = rx.recv() {
-            let self_id = sprite_collections_clone.2.read().unwrap();
+            let self_id = sprite_collections_clone.self_id.read().unwrap();
             match message {
                 UpdateMessage::PositionChange => {
-                    let target_sprite = sprite_collections_clone.0.read().unwrap();
+                    let target_sprite = sprite_collections_clone
+                        .position_collections
+                        .read()
+                        .unwrap();
                     let target_sprite = target_sprite.get(&self_id).unwrap();
                     let SpritePosition { ref x, ref y, .. } = target_sprite;
                     let (x, y) = {
@@ -89,7 +102,10 @@ fn main() {
                     socket_clone.send_to(&message, "127.0.0.1:8080").unwrap();
                 }
                 UpdateMessage::PositionChangeExtern(point) => {
-                    let target_sprite = sprite_collections_clone.0.read().unwrap();
+                    let target_sprite = sprite_collections_clone
+                        .position_collections
+                        .read()
+                        .unwrap();
                     let target_sprite = target_sprite.get(&(point.id as u32)).unwrap();
                     let SpritePosition {
                         ref x,
@@ -107,7 +123,12 @@ fn main() {
                     }
                 }
                 UpdateMessage::PlayerInsertion(point) => {
-                    let mut player_registry = sprite_collections_clone.0.write().unwrap();
+                    println!("Inserting player {}", point.id);
+                    let mut player_registry = sprite_collections_clone
+                        .position_collections
+                        .write()
+                        .unwrap();
+                    println!("Registry obtained");
                     let sprite_position = SpritePosition {
                         x: Arc::new(RwLock::new(point.x)),
                         y: Arc::new(RwLock::new(point.y)),
@@ -116,67 +137,18 @@ fn main() {
 
                     player_registry.insert(point.id as u32, sprite_position);
                     sprite_collections_clone
-                        .1
+                        .injection_order
                         .write()
                         .unwrap()
                         .replace(point.id as u32);
+                    println!("Injection order updated");
                 }
             }
         }
     });
 
-    // External listening thread
-    let tx_clone = tx.clone();
-    thread::spawn(move || {
-        let socket = socket.try_clone().unwrap();
-        let mut buf = vec![0; 1024];
-        while let Ok((size, _src)) = socket.recv_from(&mut buf) {
-            println!("message received");
-            let data = &buf[..size];
-            let message = serde_json::from_slice::<BellMessage>(&data);
-            if let Ok(message) = message {
-                match message {
-                    BellMessage::PositionChangeMessage(point) => {
-                        tx_clone
-                            .send(UpdateMessage::PositionChangeExtern(point))
-                            .unwrap();
-                    }
-                    BellMessage::PlayerInsertionMessage(point) => {
-                        tx_clone
-                            .send(UpdateMessage::PlayerInsertion(point))
-                            .unwrap();
-                    }
-                    _ => {}
-                }
-            }
-        }
-    });
-
-    let message_sender = {
-        let sender_lock = Mutex::new(tx);
-        MessageSender { tx: sender_lock }
-    };
-
-    App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugin(LogDiagnosticsPlugin::default())
-        .add_plugin(FrameTimeDiagnosticsPlugin::default())
-        .insert_resource(sprite_collections)
-        .insert_resource(message_sender)
-        .add_system(sprite_movement)
-        .add_system(maybe_insert_player)
-        .add_startup_system(setup)
-        .run();
-}
-
-fn setup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut sprite_collections: ResMut<SpritePositions>,
-) {
     // fetch id as assigned by the server
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let registration_message = BellMessage::PlayerInsertionMessage(Point {
+    let registration_message = BellMessage::PlayerRegistrationMessage(Point {
         x: 0.,
         y: 0.,
         id: 0,
@@ -198,6 +170,73 @@ fn setup(
         panic!("Received registration data but failed to parse it");
     }
 
+    *sprite_collections.self_id.write().unwrap() = id;
+    sprite_collections
+        .position_collections
+        .write()
+        .unwrap()
+        .insert(
+            id,
+            SpritePosition {
+                x: Arc::new(RwLock::new(0.)),
+                y: Arc::new(RwLock::new(0.)),
+                has_extern_changes: Arc::new(RwLock::new(false)),
+            },
+        );
+
+    // External listening thread
+    let tx_clone = tx.clone();
+    let socket_clone = socket.try_clone().unwrap();
+    thread::spawn(move || {
+        let mut buf = vec![0; 1024];
+        while let Ok((size, _src)) = socket_clone.recv_from(&mut buf) {
+            println!("message received");
+            let data = &buf[..size];
+            let message = serde_json::from_slice::<BellMessage>(&data);
+            if let Ok(message) = message {
+                match message {
+                    BellMessage::PositionChangeMessage(point) => {
+                        tx_clone
+                            .send(UpdateMessage::PositionChangeExtern(point))
+                            .unwrap();
+                    }
+                    BellMessage::PlayerInsertionMessage(point) => {
+                        println!("Player insertion message received");
+                        tx_clone
+                            .send(UpdateMessage::PlayerInsertion(point))
+                            .unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    });
+
+    let message_sender = {
+        let sender_lock = Mutex::new(tx);
+        MessageSender { tx: sender_lock }
+    };
+    let wrapped_socket = WrappedSocket { socket };
+
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugin(LogDiagnosticsPlugin::default())
+        .add_plugin(FrameTimeDiagnosticsPlugin::default())
+        .insert_resource(sprite_collections)
+        .insert_resource(message_sender)
+        .insert_resource(wrapped_socket)
+        .add_system(sprite_movement)
+        .add_system(maybe_insert_player)
+        .add_startup_system(setup)
+        .run();
+}
+
+fn setup(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    sprite_collections: ResMut<SpritePositions>,
+) {
+    let id = sprite_collections.self_id.read().unwrap();
     commands.spawn(Camera2dBundle::default());
     commands.spawn((
         SpriteBundle {
@@ -206,19 +245,8 @@ fn setup(
             ..default()
         },
         Direction::Still,
-        PlayerId(id),
+        PlayerId(*id),
     ));
-
-    *sprite_collections.2.write().unwrap() = id;
-    let mut sprite_registry = sprite_collections.0.write().unwrap();
-    sprite_registry.insert(
-        id,
-        SpritePosition {
-            x: Arc::new(RwLock::new(0.)),
-            y: Arc::new(RwLock::new(0.)),
-            has_extern_changes: Arc::new(RwLock::new(false)),
-        },
-    );
 }
 
 fn maybe_insert_player(
@@ -226,17 +254,21 @@ fn maybe_insert_player(
     asset_server: Res<AssetServer>,
     sprite_positions: ResMut<SpritePositions>,
 ) {
-    let insertion_order = sprite_positions.1.read().unwrap();
+    println!("Maybe inserting player");
+    let mut insertion_order = sprite_positions.injection_order.write().unwrap();
     if insertion_order.is_some() {
-        let mut insertion_order = sprite_positions.1.write().unwrap();
+        println!("Injection order found");
         let insert_id = insertion_order.take();
         if let Some(insert_id) = insert_id {
-            let target_position = sprite_positions.0.read().unwrap();
+            let target_position = sprite_positions.position_collections.read().unwrap();
+            println!("Read copy of target position map obtained");
             let target_position = target_position.get(&insert_id);
             if target_position.is_none() {
+                println!("Target position not found for injection order");
                 return;
             }
             let target_position = target_position.unwrap();
+            println!("Target position found");
             commands.spawn((
                 SpriteBundle {
                     texture: asset_server.load("icon.png"),
@@ -250,6 +282,8 @@ fn maybe_insert_player(
                 Direction::Still,
                 PlayerId(insert_id),
             ));
+
+            println!("Sprite bundle spawned");
         }
     }
     // if let Some(target_id) = sprite_positions.1.read().unwrap() {
@@ -269,7 +303,7 @@ fn sprite_movement(
     for (mut logo, mut transform, player_id) in &mut sprite_position {
         let has_extern_changes = {
             let guard = position_record
-                .0
+                .position_collections
                 .read()
                 .unwrap()
                 .get(&player_id.0)
@@ -282,7 +316,7 @@ fn sprite_movement(
         };
 
         if player_id.0 != 0 && has_extern_changes {
-            let position_record = position_record.0.read().unwrap();
+            let position_record = position_record.position_collections.read().unwrap();
             let position_record = position_record.get(&player_id.0).unwrap();
             transform.translation.x = position_record.x.read().unwrap().clone();
             transform.translation.y = position_record.y.read().unwrap().clone();
@@ -309,7 +343,7 @@ fn sprite_movement(
             Direction::Still if !has_extern_changes => {}
             _ => {
                 // we have external commands to carry out from the update_server
-                let position_record = position_record.0.read().unwrap();
+                let position_record = position_record.position_collections.read().unwrap();
                 let position_record = position_record.get(&player_id.0).unwrap();
                 transform.translation.x = position_record.x.read().unwrap().clone();
                 transform.translation.y = position_record.y.read().unwrap().clone();
@@ -378,7 +412,7 @@ fn update_server(
     message_sender: &Res<MessageSender>,
     player_id: &PlayerId,
 ) {
-    let position_record = position_record.0.read().unwrap();
+    let position_record = position_record.position_collections.read().unwrap();
     let position_record = position_record.get(&player_id.0).unwrap();
     let mut x_ = position_record.x.write().unwrap();
     let mut y_ = position_record.y.write().unwrap();
