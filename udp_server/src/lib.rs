@@ -18,7 +18,7 @@ pub enum BellMessage {
 pub struct GameState {
     capacity: usize,
     process_queue: Vec<Option<BellMessage>>,
-    _positions: std::collections::HashMap<u32, (f32, f32)>,
+    positions: std::collections::HashMap<u32, (f32, f32)>,
     addrs: std::collections::HashMap<u32, std::net::SocketAddr>,
 }
 impl GameState {
@@ -26,14 +26,14 @@ impl GameState {
         Self {
             capacity,
             process_queue: Vec::<Option<BellMessage>>::with_capacity(capacity),
-            _positions: std::collections::HashMap::<u32, (f32, f32)>::with_capacity(2),
+            positions: std::collections::HashMap::<u32, (f32, f32)>::with_capacity(2),
             addrs: std::collections::HashMap::<u32, std::net::SocketAddr>::with_capacity(2),
         }
     }
 
     pub fn insert_player(&mut self, id: u32, x: f32, y: f32, addr: std::net::SocketAddr) {
         self.addrs.insert(id, addr);
-        self._positions.insert(id, (x, y));
+        self.positions.insert(id, (x, y));
     }
     pub fn is_full(&self) -> bool {
         self.process_queue.len() >= self.capacity
@@ -68,11 +68,23 @@ impl GameState {
         let mut res_addrs = Vec::with_capacity(3);
         println!("addrs: {:?}", self.addrs);
         for (k, v) in self.addrs.iter() {
-            if k != &id {
+            if *k != id {
                 res_addrs.push(v);
             }
         }
 
         res_addrs
+    }
+
+    pub fn get_points_for_id(&self, id: u32) -> Vec<Point> {
+        self.positions
+            .iter()
+            .filter(|(k, _)| **k != id)
+            .map(|(k, (x, y))| Point {
+                x: *x,
+                y: *y,
+                id: *k,
+            })
+            .collect::<Vec<Point>>()
     }
 }

@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .iter()
                         .map(|message| match message {
                             BellMessage::PositionChangeMessage(point) => {
-                                println!("Processing position change message");
+                                println!("Processing position change message for id {}", point.id);
                                 let audiences = game_state.get_addrs_for_id(point.id);
                                 audiences
                                     .iter()
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .collect::<Vec<(&std::net::SocketAddr, BellMessage)>>();
 
                     for (addr, message) in out_going_messages {
-                        println!("Sending message to {}", addr);
+                        println!("Sending message to {}\n-------------------", addr);
                         let data = serde_json::to_vec(&message).unwrap();
                         _ = socket.send_to(&data, *addr).await;
                     }
@@ -96,15 +96,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 game_state.is_full()
             };
 
+            // TODO: we'll need to also send information about the current state of the game
+            // which includes existing players positions and id
             if !is_full {
                 let mut game_state = game_state_clone.write().await;
                 if let BellMessage::PlayerRegistrationMessage(ref mut point) = data {
                     let id = next_available_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     point.id = id;
                     game_state.insert_player(id, point.x, point.y, src);
+                    // Here we need to send two messages:
+                    // 1. Its own assigned id
+                    // 2. The positions of other existing players
+                    let return_messages = {
+                        let points = game_state.get_points_for_id(id);
+                        points
+                            .into_iter()
+                            .map(|point| BellMessage::PositionChangeMessage(point))
+                            .collect::<Vec<BellMessage>>()
+                    };
+
                     let mut data_buf = [0u8; 4];
                     data_buf.as_mut().write(&id.to_be_bytes()).unwrap();
                     _ = socket.send_to(&data_buf, src).await;
+
+                    for msg in return_messages {
+                        let data = serde_json::to_vec(&msg).unwrap();
+                        _ = socket.send_to(&data, src).await;    
+                    }
                 }
                 game_state.queue_message(data);
             } else {
