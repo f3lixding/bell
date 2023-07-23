@@ -13,6 +13,7 @@ pub enum BellMessage {
     DeferMessage,
     PlayerInsertionMessage(Point),
     PlayerRegistrationMessage(Point),
+    RegistrationReplyMessage(u32, Vec<Point>)
 }
 
 pub struct GameState {

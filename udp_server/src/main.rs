@@ -109,20 +109,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // 2. The positions of other existing players
                     let return_messages = {
                         let points = game_state.get_points_for_id(id);
-                        points
-                            .into_iter()
-                            .map(|point| BellMessage::PositionChangeMessage(point))
-                            .collect::<Vec<BellMessage>>()
+                        BellMessage::RegistrationReplyMessage(id, points)
                     };
 
-                    let mut data_buf = [0u8; 4];
-                    data_buf.as_mut().write(&id.to_be_bytes()).unwrap();
-                    _ = socket.send_to(&data_buf, src).await;
-
-                    for msg in return_messages {
-                        let data = serde_json::to_vec(&msg).unwrap();
-                        _ = socket.send_to(&data, src).await;    
-                    }
+                    let data = serde_json::to_vec(&return_messages).unwrap();
+                    _ = socket.send_to(&data, src).await;
                 }
                 game_state.queue_message(data);
             } else {

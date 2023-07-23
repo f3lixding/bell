@@ -159,31 +159,45 @@ fn main() {
         .send_to(&registration_message, "127.0.0.1:8080")
         .unwrap();
 
+    // this doesn't work because the second message is sent before the listener for it is setup
+    // In order to fix this would need to receive the second message along with the first
+    // This means coming up with a different enum for the message
     let mut buf = vec![0; 1024];
-    let id: u32;
     if let Ok((size, _src)) = socket.recv_from(&mut buf) {
-        if size > 4 {
-            panic!("Received registration data but failed to parse it");
+        let data = &buf[..size];
+        let message = serde_json::from_slice::<BellMessage>(&data).unwrap();
+        if let BellMessage::RegistrationReplyMessage(id, points) = message {
+            println!("Received registration reply message");
+            println!("There are currently {} players", points.len());
+            *sprite_collections.self_id.write().unwrap() = id;
+            sprite_collections
+                .position_collections
+                .write()
+                .unwrap()
+                .insert(
+                    id,
+                    SpritePosition {
+                        x: Arc::new(RwLock::new(0.)),
+                        y: Arc::new(RwLock::new(0.)),
+                        has_extern_changes: Arc::new(RwLock::new(false)),
+                    },
+                );
+            for point in points {
+                let sprite_position = SpritePosition {
+                    x: Arc::new(RwLock::new(point.x)),
+                    y: Arc::new(RwLock::new(point.y)),
+                    has_extern_changes: Arc::new(RwLock::new(true)),
+                };
+                sprite_collections.position_collections.write().unwrap().insert(point.id, sprite_position);
+                *sprite_collections.injection_order.write().unwrap() = Some(point.id);
+            }
+        } else {
+            println!("Failed to receive proper registration reply message");
         }
-        id = u32::from_be_bytes(buf[0..4].try_into().unwrap());
-        println!("Id received: {}", id);
     } else {
         panic!("Received registration data but failed to parse it");
     }
 
-    *sprite_collections.self_id.write().unwrap() = id;
-    sprite_collections
-        .position_collections
-        .write()
-        .unwrap()
-        .insert(
-            id,
-            SpritePosition {
-                x: Arc::new(RwLock::new(0.)),
-                y: Arc::new(RwLock::new(0.)),
-                has_extern_changes: Arc::new(RwLock::new(false)),
-            },
-        );
 
     // External listening thread
     let tx_clone = tx.clone();
